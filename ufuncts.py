@@ -1,14 +1,18 @@
 import os
 import math
 import re
+import sys
 from time import perf_counter, process_time
+from contextlib import contextmanager
 
 sep = os.sep
 timer = perf_counter
 
-version = 4
-vdate = "160423"
+version = 6
+revision = 2
+vdate = "230424"
 ctime = None
+versionstring = "ufuncts v"+str(version)+"-"+vdate+"R"+str(revision)
 
 default_encoding = "UTF-8"
 
@@ -25,6 +29,7 @@ def printd(D, lim=0):
             break
         
 def formatNum(num, separator=","):
+    """ Transform a number into it's colloquial string representation including a separator. """
     return (("{:"+separator+"}").format(num))
 
 def minmax(_min, _max, val):
@@ -72,9 +77,9 @@ def subfileslist(path, sort=True):
             fileslist.append(path+sep+fn)
     return sorted(fileslist, key=lambda s: s.split(sep)[-1].lower()) if sort else fileslist
 
-#incomplete, do not use
 def generate_file_structure(destination, seek_directory, flist=None):
     """ In the directory name given by <destination> and a list of file paths with nested directory structure originating from a common <seek_directory>, recreate the same directory structure. """
+    #incomplete; incorporate os.mkdirs instead
     if flist is None:
         flist = subfileslist(seek_directory)
     if not destination.endswith(sep):
@@ -92,13 +97,13 @@ def generate_file_structure(destination, seek_directory, flist=None):
                 os.mkdir(nsubdir)
                 
 def construct_path(path, sep=sep):
-        """ Constructs a full directory path, if it doesn't already exist. """
-        if os.path.isdir(path): return
-        partial = [x for x in path.strip().split(sep) if x]
-        subpath = ""
-        for directory in partial:
-            subpath += directory + sep
-            if not os.path.isdir(subpath): os.mkdir(subpath)
+    """ Constructs a full directory path, if it doesn't already exist. """
+    if os.path.isdir(path): return
+    partial = [x for x in path.strip().split(sep) if x]
+    subpath = ""
+    for directory in partial:
+        subpath += directory + sep
+        if not os.path.isdir(subpath): os.mkdir(subpath)
                 
 def runpy(filepath):
     """ Read and execute given Python program in current environment. """
@@ -130,15 +135,13 @@ def track_time(get=False, limit=4):
     else:
         print("Time since last call: %s" % str(time))
         
-def calc_bytes(b):
+def calc_bytes(b, suffixes=(" bytes"," Kbytes"," Mbytes"," Gbytes", " Tbytes"), base=1024):
     """For a given number of bytes, return a string representing its colloquial expression, rounded to 2 minor digits."""
-    suffix = " bytes"
-    kb = 1024
-    mb = 1024**2
-    gb = 1024**3
-    if b > gb: suffix = " Gbytes"; b /= gb
-    elif b > mb: suffix = " Mbytes"; b /= mb
-    elif b > kb: suffix = " Kbytes"; b /= kb
+    if not b: return str(0)+suffixes[0]
+    mag = math.floor(math.log(b)/math.log(base))
+    mag = min(mag, len(suffixes)-1)
+    b = b/(base**mag)
+    suffix = suffixes[mag]
     return str(round(b,2))+suffix
     
 def bench(fun, n=1):
@@ -148,10 +151,15 @@ def bench(fun, n=1):
 
 def default(val, _default):
     """ Returns val if it is a True-like value, otherwise default."""
-    try:
-        return val if val else _default
-    except:
-        return _default
+    try: return val if val else _default
+    except Exception: return _default
+    
+def peek(data, i, lookahead=1, default=None, back=False):
+    """ Simple lookahead. Returns the next element from a given index, or None if there is no next element."""
+    try: return data[i-lookahead] if back else data[i+lookahead]
+    except: return default
+    
+lookahead = peek
 
 def concat(L, R) -> list:
     """ Returns the concatenation of two list-like objects. """
@@ -163,7 +171,7 @@ def combine(LD, RD) -> dict:
         
 def print_self():
     """ Print code of the currently active file to the console. """
-    with open(__file__, "r") as this:
+    with open(__file__, "r", encoding=default_encoding) as this:
         for line in this:
             print(line,end="")
     print("\n")
@@ -177,23 +185,24 @@ def excerpt(inlist, size=10, asdict=False):
     return res[0] if size == 1 else res
     
 def basename(filename): #note: this is much faster than os.path.basename
-    """ Turn a path to a file into the corresponding basic filename. """
+    """ Turn a path to a file into the corresponding basic filename. Returns input as-is if no path separator is found. """
     if sep in filename: return filename.split(sep)[-1]
     elif '/' in filename: return filename.split('/')[-1]
     return filename
 
 def basenames(fileslist):
+    """ Apply ufuncts.basename to a list of inputs. """
     return [basename(x) for x in fileslist]
 
 def extension(filename):
     """ Returns the extension/file type of a file. """
     if not "." in filename: return None
-    return filename.split(".")[-1]
+    return filename.split(".")[-1].lower()
 
 def split_ext(filename):
     """ Returns tuple of (basename, extensions*) """
     filename = basename(filename)
-    if not "." in filename: return tuple()
+    if not "." in filename: return (filename, "")
     return filename.split(".")
     
 def match_pattern(x, M:list, default=None):
@@ -202,11 +211,30 @@ def match_pattern(x, M:list, default=None):
             return res
     return default
 
-def readf(file, mode="r"):
+def readf(file, mode="r", encoding=default_encoding, split=True, strip=True, condense=False, splitter="\n"):
     """ Open a file, read its contents and return them, then close the file. """
-    with open(file, mode) as infile:
-        data = infile.read()
-    return data
+    with open(file, mode, encoding=encoding) as infile:
+        if not split:
+            return infile.read()
+        else:
+            if strip and not condense:
+                data = []
+                for line in infile:
+                    data.append(line.strip())
+                return data
+            if not strip and not condense:
+                return infile.readlines()
+            if strip and condense:
+                data = []
+                for line in infile:
+                    line = line.strip()
+                    if line: data.append(line)
+                return data
+            if not strip and condense:
+                data = []
+                for line in infile:
+                    if line.strip(): data.append(line)
+                return data
 
 def atoi(text):
     """ Helper function. Return input as number if it is a number-like, otherwise return input. """
@@ -214,7 +242,7 @@ def atoi(text):
 
 def natural_key(text):
     """ Sorting key function. Sort a list by its natural ordering, i.e. alpha first, ordered numbers second. """
-    return [atoi(c.lower()) for c in re.split('(\d+)',text)]
+    return [atoi(c.lower()) for c in re.split(r'(\d+)',text)]
 
 def natural_sort(L, **kwargs):
     """ Sort a list by its natural ordering, i.e. alpha first, ordered numbers second. """
@@ -222,9 +250,41 @@ def natural_sort(L, **kwargs):
 
 canon_sort = canonical_sort = natural_sort
 
-def safe_overwrite(filename, data, mode="w", encoding=default_encoding, temp_extension=".temp", verbose=True):
-    """ Write data into a temp file and verify before overwriting original file. """
-    #wip - untested
+def get_duplicates(array, set_test=True):
+    """ Efficiently retrieve duplicate items from an input array. Returns set of items with >1 occurences. """
+    res = set()
+    #set_test - set this if you expect no duplicates for most inputs
+    if set_test and (isinstance(array, set) or isinstance(array, dict) or len(set(array)) == len(array)): return res
+    seen = set()
+    for item in array:
+        if item in seen: res.add(item)
+        else: seen.add(item)
+    return res
+
+def map(array, func):
+    """ Given a function and input array, return list where the function has been applied to each item in the array. """
+    return [func(i) for i in array]
+
+def fold(array, func):
+    """ Fold the array using func, where func is a function of the shape f(a,b)=c. """
+    acc, array = array[0], array[1:]
+    for item in array:
+        acc = func(acc, item)
+    return acc    
+
+def is_listlike(item):
+    """ Returns true if item is a list-like object, false otherwise. """
+    return hasattr(item, "__iter__") and not isinstance(item, str)
+
+#tbd: test with binary data
+def safe_write(filename, data, mode="w", encoding=default_encoding, temp_extension=".temp", cast_str=True, sep="\n", keep_temp=False, verbose=True):
+    """ Write data into a temp file and verify contents before replacing original file.
+        Data can be a list-like -each item representing a line-, a string, or binary data.
+        cast_str (True): Cast all items to str before writing. If set to False, may fail if encountering non-string types in list.
+        sep ('\\n'): Append separator character at the end of each item.
+        keep_temp (False): Do not delete the temporary file in case of failure.
+        verbose (True): Print debug information to stdout.
+    """
     filename = filename.strip()
     temp_extension = temp_extension.strip()
     encoding = None if "b" in mode else encoding
@@ -234,30 +294,36 @@ def safe_overwrite(filename, data, mode="w", encoding=default_encoding, temp_ext
     try:
         stage = 1
         with open(temp_filename, mode, encoding=encoding) as tempfile:
-            tempfile.write(data)
+            if "b" in mode or not is_listlike(data):
+                tempfile.write(data)
+            else: #is listlike                   
+                for item in data:
+                    if cast_str and not isinstance(item, str): item = str(item)
+                    if sep and not item.endswith(sep): item += sep
+                    tempfile.write(item)
+        print(temp_filename) ###testing
         stage = 2
-        if os.path.exists(filename):
-            os.unlink(filename)
+        os.replace(temp_filename, filename)
         stage = 3
-        os.rename(temp_filename, filename)
-        stage = 4
+        return True
     except Exception as e:
         if verbose:
-            print(f"Warning: Stage {stage} error when writing file {filename}.\n", e)
-        if os.path.exists(tempfile): os.unlink(tempfile)
+            print(f"Warning: Stage {stage} error when writing file {filename}.\n", e, file=sys.stderr)
+        if os.path.exists(temp_filename) and not keep_temp: os.unlink(temp_filename)
+        return False
         
 def _install():
     """ Install itself into main python directory, enabling global use. """
-    import sys, os
+    import sys
     main_dir = os.path.dirname(sys.executable) + os.sep + "Lib" + os.sep + basename(__file__)
     choice = "y"
     if os.path.exists(main_dir):
         choice = input("%s\nalready exists. Overwrite? (Y/N)\n>>> " % main_dir).lower()
     if choice in ["y","yes","ok"]:
-        with open(main_dir,"w") as newfile:
-            with open(__file__, "r") as this:
+        with open(main_dir, "w", encoding=default_encoding) as newfile:
+            with open(__file__, "r", encoding=default_encoding) as this:
                 for line in this:
                     newfile.write(line)
-        print("%s has been successfully installed to\n%s" % (__file__, main_dir))
+        print("%s has been successfully installed to\n%s" % (versionstring, main_dir))
     else:
         print("Aborted.")
