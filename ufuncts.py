@@ -8,13 +8,14 @@ from contextlib import contextmanager
 sep = os.sep
 timer = perf_counter
 
-version = 6
-revision = 2
-vdate = "230424"
+version = 7
+revision = 4
+vdate = "260425"
 ctime = None
 versionstring = "ufuncts v"+str(version)+"-"+vdate+"R"+str(revision)
 
 default_encoding = "UTF-8"
+listlikes = (list, set, tuple, frozenset)
 
 def printl(L, lim=0):
     """ Print a list into the terminal line-by-line, up to a defined limit."""
@@ -27,6 +28,16 @@ def printd(D, lim=0):
         print(m,"\t",D[m])
         if lim > 0 and i >= lim:
             break
+        
+def printr(s:str) -> str:
+    """ Print string as an r-string, which will render escape sequences canonically. """
+    print(r""+s)
+        
+def raws(s:object):
+    """ Returns the raw (canonical) representation of a string or obj, including escape characters. """
+    if isinstance(s, str):
+        return repr(s)[1:-1]
+    return repr(s)
         
 def formatNum(num, separator=","):
     """ Transform a number into it's colloquial string representation including a separator. """
@@ -55,21 +66,30 @@ def avg(L, r=None):
 average = avg
 mean = avg
 
-def get_mag(x):
-    """ Return base-1024 integer magnitude of a number. """
-    return int(math.log(x, 1024)) if x > 0 else 0
+def get_mag(x, base=1024):
+    """ Return base integer magnitude of a number. """
+    return int(math.log(x, base)) if x > 0 else 0
 
-def fileslist(path, sort=False, sortkey=None):
+def strbool(v:str)->bool:
+    """ If v is empty or a false-like string, return False, otherwise True. """
+    return not v or v not in {"False","0"}
+
+def fileslist(path, aspath=True, sort=False, sortkey=None):
     """ Walk given path and return a list of all files within that directory, or None if path is invalid. """
+    path = os.path.normpath(path)
     resultlist = []
     if not os.path.isdir(path): return
     for walk in os.walk(path):
         resultlist.extend(walk[2])
         break
+    if aspath:
+        path = path.rstrip(sep)
+        resultlist = [path + sep + fn for fn in resultlist]
     return sorted(resultlist, key=sortkey) if sort else resultlist
 
 def subfileslist(path, sort=True):
     """ Returns the full path of all files in specified directory, including subdirectories. """
+    path = os.path.normpath(path)
     fileslist = list()
     for subdir in os.walk(path):
         path = subdir[0]
@@ -95,15 +115,10 @@ def generate_file_structure(destination, seek_directory, flist=None):
             nsubdir = sep.join(partial_path)
             if not os.path.exists(nsubdir):
                 os.mkdir(nsubdir)
-                
-def construct_path(path, sep=sep):
-    """ Constructs a full directory path, if it doesn't already exist. """
-    if os.path.isdir(path): return
-    partial = [x for x in path.strip().split(sep) if x]
-    subpath = ""
-    for directory in partial:
-        subpath += directory + sep
-        if not os.path.isdir(subpath): os.mkdir(subpath)
+        
+def construct_path(path, mode=511):
+    """ Constructs a full directory path, including subpaths. Does nothing if path already exists. """
+    os.makedirs(path, mode=mode, exist_ok=True)
                 
 def runpy(filepath):
     """ Read and execute given Python program in current environment. """
@@ -138,9 +153,9 @@ def track_time(get=False, limit=4):
 def calc_bytes(b, suffixes=(" bytes"," Kbytes"," Mbytes"," Gbytes", " Tbytes"), base=1024):
     """For a given number of bytes, return a string representing its colloquial expression, rounded to 2 minor digits."""
     if not b: return str(0)+suffixes[0]
-    mag = math.floor(math.log(b)/math.log(base))
+    mag = int(math.log(b, base))
     mag = min(mag, len(suffixes)-1)
-    b = b/(base**mag)
+    b /= base**mag
     suffix = suffixes[mag]
     return str(round(b,2))+suffix
     
@@ -155,9 +170,9 @@ def default(val, _default):
     except Exception: return _default
     
 def peek(data, i, lookahead=1, default=None, back=False):
-    """ Simple lookahead. Returns the next element from a given index, or None if there is no next element."""
+    """ Simple lookahead. Returns the next element from a given index <i>, or <default=None> if there is no next element."""
     try: return data[i-lookahead] if back else data[i+lookahead]
-    except: return default
+    except Exception: return default
     
 lookahead = peek
 
@@ -168,6 +183,18 @@ def concat(L, R) -> list:
 def combine(LD, RD) -> dict:
     """ Returns the combination of two dictionaries. When identical keys are contained, the second dictionary is given priority. """
     return {**LD, **RD}
+
+def intersect(L, R) -> list:
+    """ Returns the intersection (common elements) of two list-like objects. """
+    Lx, Rx = list(L), set(R)
+    return [x for x in Lx if x in Rx]
+
+def flatten(L) -> list:
+    """ Returns flattened (un-nested) version of a list-like object. """
+    if is_listlike(L):
+        return [item for sub in L for item in flatten(sub)]
+    else:
+        return [L]
         
 def print_self():
     """ Print code of the currently active file to the console. """
@@ -194,10 +221,12 @@ def basenames(fileslist):
     """ Apply ufuncts.basename to a list of inputs. """
     return [basename(x) for x in fileslist]
 
-def extension(filename):
+def extension(filename, lower=True, dot=False):
     """ Returns the extension/file type of a file. """
     if not "." in filename: return None
-    return filename.split(".")[-1].lower()
+    res = filename.split(".")[-1].lower() if lower else filename.split(".")[-1]
+    if dot: res = "." + res
+    return res
 
 def split_ext(filename):
     """ Returns tuple of (basename, extensions*) """
@@ -235,6 +264,24 @@ def readf(file, mode="r", encoding=default_encoding, split=True, strip=True, con
                 for line in infile:
                     if line.strip(): data.append(line)
                 return data
+            
+def writef(data, file, mode="a", encoding=default_encoding, strip=True, raw=False, flush=False):
+    """ Open a file, write a line or multiple lines of data, then close it.
+        data: string or list of input data
+        file: filename or path
+        strip: strip starting and trailing whitespaces
+        raw: Write strings as-is (including escape characters).    
+    """
+    if isinstance(data, str):
+        data = [data]
+    with open(file, mode, encoding=encoding) as outfile:
+        for line in data:
+            if strip: line = line.strip()
+            if raw: line = raws(line)
+            outfile.write(line)
+            outfile.write("\n")
+        if flush:
+            outfile.flush()
 
 def atoi(text):
     """ Helper function. Return input as number if it is a number-like, otherwise return input. """
@@ -267,13 +314,14 @@ def map(array, func):
 
 def fold(array, func):
     """ Fold the array using func, where func is a function of the shape f(a,b)=c. """
-    acc, array = array[0], array[1:]
+    try: acc = array.pop(0)
+    except: return []
     for item in array:
         acc = func(acc, item)
     return acc    
 
 def is_listlike(item):
-    """ Returns true if item is a list-like object, false otherwise. """
+    """ Returns true if item is an iterable non-string object, false otherwise. """
     return hasattr(item, "__iter__") and not isinstance(item, str)
 
 #tbd: test with binary data
@@ -301,7 +349,7 @@ def safe_write(filename, data, mode="w", encoding=default_encoding, temp_extensi
                     if cast_str and not isinstance(item, str): item = str(item)
                     if sep and not item.endswith(sep): item += sep
                     tempfile.write(item)
-        print(temp_filename) ###testing
+        #print(temp_filename) ###testing
         stage = 2
         os.replace(temp_filename, filename)
         stage = 3
